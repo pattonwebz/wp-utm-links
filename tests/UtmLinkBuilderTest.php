@@ -173,4 +173,63 @@ class UtmLinkBuilderTest extends TestCase {
 
 		$this->assertSame( '3', $args['days_active'] );
 	}
+
+	public function test_consented_defaults_included_by_default(): void {
+		$builder = new UtmLinkBuilder(
+			[ 'consented_defaults' => [ 'software_version' => '1.2.3' ] ]
+		);
+
+		$args = $this->parse_query( $builder->build_link( 'https://example.com/' ) );
+
+		$this->assertTrue( $builder->has_consent() );
+		$this->assertSame( '1.2.3', $args['software_version'] );
+	}
+
+	public function test_consented_defaults_omitted_when_consent_false(): void {
+		$builder = new UtmLinkBuilder(
+			[
+				'consent'            => false,
+				'consented_defaults' => [ 'software_version' => '1.2.3' ],
+			]
+		);
+
+		$args = $this->parse_query( $builder->build_link( 'https://example.com/' ) );
+
+		$this->assertFalse( $builder->has_consent() );
+		$this->assertArrayNotHasKey( 'software_version', $args );
+	}
+
+	public function test_plain_defaults_still_included_when_consent_false(): void {
+		$builder = new UtmLinkBuilder(
+			[
+				'consent'            => false,
+				'defaults'           => [ 'utm_source' => 'my-plugin' ],
+				'consented_defaults' => [ 'software_version' => '1.2.3' ],
+			]
+		);
+
+		$args = $this->parse_query( $builder->build_link( 'https://example.com/' ) );
+
+		$this->assertSame( 'my-plugin', $args['utm_source'] );
+		$this->assertArrayNotHasKey( 'software_version', $args );
+	}
+
+	public function test_consent_accepts_callable_resolved_at_build_time(): void {
+		$state   = [ 'allowed' => false ];
+		$builder = new UtmLinkBuilder(
+			[
+				'consent'            => static function () use ( &$state ) {
+					return $state['allowed'];
+				},
+				'consented_defaults' => [ 'software_version' => '1.2.3' ],
+			]
+		);
+
+		$args_before = $this->parse_query( $builder->build_link( 'https://example.com/' ) );
+		$this->assertArrayNotHasKey( 'software_version', $args_before );
+
+		$state['allowed'] = true;
+		$args_after        = $this->parse_query( $builder->build_link( 'https://example.com/' ) );
+		$this->assertSame( '1.2.3', $args_after['software_version'] );
+	}
 }

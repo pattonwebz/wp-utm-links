@@ -27,11 +27,31 @@ class UtmLinkBuilder {
 
 	/**
 	 * Default query args: key => scalar value, or key => callable resolved
-	 * lazily at build time.
+	 * lazily at build time. Always included.
 	 *
 	 * @var array<string, mixed>
 	 */
 	protected $defaults;
+
+	/**
+	 * Same shape as $defaults, but only included when consent() is true.
+	 * Intended for anything that amounts to collecting data about the
+	 * install/user — telemetry, usage stats, environment info — that a
+	 * plugin may need to let people opt out of.
+	 *
+	 * @var array<string, mixed>
+	 */
+	protected $consented_defaults;
+
+	/**
+	 * Whether $consented_defaults are allowed to be sent: a plain bool, or
+	 * a callable resolved lazily at build time (e.g. reading a "usage
+	 * tracking" option). Defaults to true — this class doesn't enforce an
+	 * opt-out by itself, it just gives you the mechanism to wire one up.
+	 *
+	 * @var bool|callable
+	 */
+	protected $consent;
 
 	/**
 	 * Named base links, e.g. [ 'default' => 'https://.../docs/', 'pro' => 'https://.../pricing/' ].
@@ -51,20 +71,33 @@ class UtmLinkBuilder {
 	 *     an empty config produces a builder that just appends whatever
 	 *     $query_args you pass at call time.
 	 *
-	 *     @type array<string, mixed>  $defaults   Default query args, applied to every generated link
-	 *                                              before per-call $query_args are merged on top. Each
-	 *                                              value may be a scalar, or a callable (Closure, [$obj,
-	 *                                              'method'], etc — plain strings are never treated as
-	 *                                              callable, so a value like 'time' is used literally)
-	 *                                              resolved at build time. A callable returning null
-	 *                                              omits that key entirely, e.g. to only add `ref` when
-	 *                                              one is actually set.
-	 *     @type array<string, string> $base_links Named base links, e.g. [ 'default' => '...', 'pro' => '...' ].
+	 *     @type array<string, mixed>  $defaults           Default query args, applied to every generated
+	 *                                                      link before per-call $query_args are merged on
+	 *                                                      top. Each value may be a scalar, or a callable
+	 *                                                      (Closure, [$obj, 'method'], etc — plain strings
+	 *                                                      are never treated as callable, so a value like
+	 *                                                      'time' is used literally) resolved at build
+	 *                                                      time. A callable returning null omits that key
+	 *                                                      entirely.
+	 *     @type array<string, mixed>  $consented_defaults Same shape as $defaults, but only merged in when
+	 *                                                      `consent` resolves truthy. Use this for anything
+	 *                                                      that amounts to collecting data about the site/
+	 *                                                      user (telemetry, usage stats, environment info)
+	 *                                                      so it can be switched off independently of the
+	 *                                                      plain UTM params in `defaults`.
+	 *     @type bool|callable         $consent            Whether `consented_defaults` are allowed to be
+	 *                                                      sent, or a callable resolved at build time (e.g.
+	 *                                                      reading a "usage tracking" option/filter).
+	 *                                                      Default true.
+	 *     @type array<string, string> $base_links         Named base links, e.g. [ 'default' => '...',
+	 *                                                      'pro' => '...' ].
 	 * }
 	 */
 	public function __construct( array $config = [] ) {
-		$this->defaults   = isset( $config['defaults'] ) && is_array( $config['defaults'] ) ? $config['defaults'] : [];
-		$this->base_links = isset( $config['base_links'] ) && is_array( $config['base_links'] ) ? $config['base_links'] : [];
+		$this->defaults           = isset( $config['defaults'] ) && is_array( $config['defaults'] ) ? $config['defaults'] : [];
+		$this->consented_defaults = isset( $config['consented_defaults'] ) && is_array( $config['consented_defaults'] ) ? $config['consented_defaults'] : [];
+		$this->consent            = $config['consent'] ?? true;
+		$this->base_links         = isset( $config['base_links'] ) && is_array( $config['base_links'] ) ? $config['base_links'] : [];
 	}
 
 	/**
@@ -128,25 +161,28 @@ class UtmLinkBuilder {
 	}
 
 	/**
-	 * Resolve the configured `defaults` into a plain array, calling any
-	 * callables and dropping any key whose resolved value is null.
+	 * Resolve the configured `defaults` (and, if consent is given,
+	 * `consented_defaults`) into a plain array.
 	 *
 	 * @return array<string, mixed>
 	 */
 	public function default_query_args() {
-		$resolved = [];
+		$resolved = $this->resolve_map( $this->defaults );
 
-		foreach ( $this->defaults as $key => $value ) {
-			$value = $this->resolve( $value );
-
-			if ( null === $value ) {
-				continue;
-			}
-
-			$resolved[ $key ] = $value;
+		if ( $this->has_consent() ) {
+			$resolved = array_merge( $resolved, $this->resolve_map( $this->consented_defaults ) );
 		}
 
 		return $resolved;
+	}
+
+	/**
+	 * Whether `consented_defaults` are currently allowed to be sent.
+	 *
+	 * @return bool
+	 */
+	public function has_consent() {
+		return (bool) $this->resolve( $this->consent );
 	}
 
 	/**
@@ -167,6 +203,30 @@ class UtmLinkBuilder {
 
 		$separator = ( false === strpos( $base_link, '?' ) ) ? '?' : '&';
 		return $base_link . $separator . http_build_query( $query_args );
+	}
+
+	/**
+	 * Resolve every value in a defaults-shaped map, dropping any key whose
+	 * resolved value is null.
+	 *
+	 * @param array<string, mixed> $map A `defaults`- or `consented_defaults`-shaped map.
+	 *
+	 * @return array<string, mixed>
+	 */
+	protected function resolve_map( array $map ) {
+		$resolved = [];
+
+		foreach ( $map as $key => $value ) {
+			$value = $this->resolve( $value );
+
+			if ( null === $value ) {
+				continue;
+			}
+
+			$resolved[ $key ] = $value;
+		}
+
+		return $resolved;
 	}
 
 	/**
