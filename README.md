@@ -63,9 +63,11 @@ $links = new UtmLinkBuilder(
             },
 
             // A plugin-specific "days since activation" telemetry value —
-            // opt in via the days_since() utility, nothing automatic here.
+            // entirely up to the consumer, nothing automatic here.
             'days_active' => static function () {
-                return UtmLinkBuilder::days_since( get_option( 'my_plugin_activation_date' ) );
+                $now        = new DateTime( gmdate( 'Y-m-d H:i:s' ) );
+                $activation = new DateTime( get_option( 'my_plugin_activation_date', gmdate( 'Y-m-d H:i:s' ) ) );
+                return $now->diff( $activation )->days;
             },
 
             // Returning null from a callable omits that key entirely, e.g.
@@ -106,10 +108,6 @@ $links->build_type_link( [], 'custom', [ 'base_link' => 'https://example.com/one
   appends a path segment.
 - `default_query_args(): array` — the configured defaults, resolved. Useful
   if you want the raw array rather than a built URL.
-- `UtmLinkBuilder::days_since( ?string $date ): ?int` — static utility,
-  whole days elapsed since `$date` (a `DateTime`-parseable string), or
-  `null` if `$date` is empty/unparseable. Not used automatically; wire it
-  into `defaults` if you want a "days active" style value.
 
 ## Development
 

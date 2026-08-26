@@ -153,25 +153,17 @@ class UtmLinkBuilderTest extends TestCase {
 		$this->assertStringStartsWith( 'https://example.com/custom/', $url );
 	}
 
-	public function test_days_since_returns_whole_days(): void {
-		$ten_days_ago = gmdate( 'Y-m-d H:i:s', strtotime( '-10 days' ) );
-
-		$this->assertSame( 10, UtmLinkBuilder::days_since( $ten_days_ago ) );
-	}
-
-	public function test_days_since_returns_null_for_empty_input(): void {
-		$this->assertNull( UtmLinkBuilder::days_since( '' ) );
-		$this->assertNull( UtmLinkBuilder::days_since( null ) );
-	}
-
-	public function test_days_since_wired_through_defaults(): void {
-		$activation_date = gmdate( 'Y-m-d H:i:s', strtotime( '-3 days' ) );
+	public function test_consumer_supplied_days_active_style_default_works(): void {
+		// Demonstrates that a "days active" value is just a normal caller-supplied
+		// closure in `defaults` — the package has no opinion about this pattern.
+		$activation_date = new \DateTime( gmdate( 'Y-m-d H:i:s', strtotime( '-3 days' ) ) );
 
 		$builder = new UtmLinkBuilder(
 			[
 				'defaults' => [
 					'days_active' => static function () use ( $activation_date ) {
-						return UtmLinkBuilder::days_since( $activation_date );
+						$now = new \DateTime( gmdate( 'Y-m-d H:i:s' ) );
+						return $now->diff( $activation_date )->days;
 					},
 				],
 			]

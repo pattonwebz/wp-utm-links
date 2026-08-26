@@ -7,9 +7,6 @@
 
 namespace Pattonwebz\WPUtmLinks;
 
-use DateTime;
-use Exception;
-
 /**
  * Builds links with a configurable, per-instance set of default query args
  * (UTM params, telemetry, or anything else) merged on top of one or more
@@ -195,34 +192,5 @@ class UtmLinkBuilder {
 		}
 
 		return $value;
-	}
-
-	/**
-	 * Optional utility: number of whole days since a stored date, e.g. for
-	 * a plugin-specific "days active" telemetry value. Not used
-	 * automatically by this class — wire it into `defaults` yourself if you
-	 * want it:
-	 *
-	 *     'days_active' => static function () {
-	 *         return UtmLinkBuilder::days_since( get_option( 'my_plugin_activation_date' ) );
-	 *     },
-	 *
-	 * @param string|null $since_date A date string parseable by DateTime, or null.
-	 *
-	 * @return int|null Whole days elapsed, or null if $since_date is empty/unparseable.
-	 */
-	public static function days_since( $since_date ) {
-		if ( empty( $since_date ) || ! is_string( $since_date ) ) {
-			return null;
-		}
-
-		try {
-			$now   = new DateTime( gmdate( 'Y-m-d H:i:s' ) );
-			$since = new DateTime( $since_date );
-
-			return $now->diff( $since )->days;
-		} catch ( Exception $e ) {
-			return null;
-		}
 	}
 }
