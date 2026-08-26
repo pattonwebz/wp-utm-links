@@ -8,64 +8,33 @@
 namespace Pattonwebz\WPUtmLinks;
 
 use DateTime;
+use Exception;
 
 /**
- * Builds UTM-tagged links with a consistent set of default query args
- * (source/medium/campaign, platform info, pro/free status, days active, etc).
+ * Builds links with a configurable, per-instance set of default query args
+ * (UTM params, telemetry, or anything else) merged on top of one or more
+ * named base URLs.
  *
- * One instance is configured per plugin via the constructor args; the same
- * instance can then be reused to build any number of links for that plugin.
+ * The class itself has no opinion about what those defaults are — pro/free
+ * status, activation-based "days active" counters, WordPress version, etc
+ * are all things a specific plugin may want, not things every consumer of
+ * this package wants. Configure them via `defaults`; a value can be a plain
+ * scalar or a callable resolved lazily at build time (so it can read
+ * constants/options that aren't available yet at construction time, and so
+ * it reflects current state on every call rather than being frozen once).
+ *
+ * One instance is configured per plugin/project; the same instance can then
+ * be reused to build any number of links for it.
  */
 class UtmLinkBuilder {
 
 	/**
-	 * UTM source value, typically the plugin slug.
+	 * Default query args: key => scalar value, or key => callable resolved
+	 * lazily at build time.
 	 *
-	 * @var string
+	 * @var array<string, mixed>
 	 */
-	protected $utm_source;
-
-	/**
-	 * UTM medium value.
-	 *
-	 * @var string
-	 */
-	protected $utm_medium;
-
-	/**
-	 * UTM campaign value.
-	 *
-	 * @var string
-	 */
-	protected $utm_campaign;
-
-	/**
-	 * Name of the option that stores the plugin's activation date.
-	 *
-	 * Used to calculate `days_active`. Pass an empty string to omit
-	 * `days_active` from generated links.
-	 *
-	 * @var string
-	 */
-	protected $activation_option;
-
-	/**
-	 * Whether the "pro" version of the plugin is active, or a callable
-	 * that resolves to a bool. Evaluated lazily so it's safe to pass a
-	 * closure that reads constants which may not be defined yet at
-	 * construction time.
-	 *
-	 * @var bool|callable
-	 */
-	protected $is_pro;
-
-	/**
-	 * The software version string to report (already resolved by the
-	 * caller, e.g. the pro version if pro is active, otherwise free).
-	 *
-	 * @var string
-	 */
-	protected $software_version;
+	protected $defaults;
 
 	/**
 	 * Named base links, e.g. [ 'default' => 'https://.../docs/', 'pro' => 'https://.../pricing/' ].
@@ -78,51 +47,37 @@ class UtmLinkBuilder {
 	protected $base_links;
 
 	/**
-	 * Name of a WordPress filter that can supply a one-off `ref` query
-	 * arg. Pass an empty string to disable.
-	 *
-	 * @var string
-	 */
-	protected $ref_filter;
-
-	/**
 	 * Constructor.
 	 *
 	 * @param array $config {
-	 *     Configuration for this builder instance.
+	 *     Configuration for this builder instance. Everything is optional;
+	 *     an empty config produces a builder that just appends whatever
+	 *     $query_args you pass at call time.
 	 *
-	 *     @type string          $utm_source        Required. UTM source, typically the plugin slug.
-	 *     @type string          $utm_medium        UTM medium. Default 'software'.
-	 *     @type string          $utm_campaign      UTM campaign. Default 'wordpress-general'.
-	 *     @type string          $activation_option Option name storing the activation date, used for
-	 *                                               `days_active`. Default '' (days_active omitted).
-	 *     @type bool|callable   $is_pro             Whether pro is active, or a callable returning bool.
-	 *                                               Default false.
-	 *     @type string          $software_version   Version string to report. Default ''.
-	 *     @type array           $base_links         Named base links, e.g. [ 'default' => '...', 'pro' => '...' ].
-	 *     @type string          $ref_filter         WordPress filter name used to fetch an optional `ref`
-	 *                                               query arg. Default ''.
+	 *     @type array<string, mixed>  $defaults   Default query args, applied to every generated link
+	 *                                              before per-call $query_args are merged on top. Each
+	 *                                              value may be a scalar, or a callable (Closure, [$obj,
+	 *                                              'method'], etc — plain strings are never treated as
+	 *                                              callable, so a value like 'time' is used literally)
+	 *                                              resolved at build time. A callable returning null
+	 *                                              omits that key entirely, e.g. to only add `ref` when
+	 *                                              one is actually set.
+	 *     @type array<string, string> $base_links Named base links, e.g. [ 'default' => '...', 'pro' => '...' ].
 	 * }
 	 */
 	public function __construct( array $config = [] ) {
-		$this->utm_source        = isset( $config['utm_source'] ) ? (string) $config['utm_source'] : '';
-		$this->utm_medium        = isset( $config['utm_medium'] ) ? (string) $config['utm_medium'] : 'software';
-		$this->utm_campaign      = isset( $config['utm_campaign'] ) ? (string) $config['utm_campaign'] : 'wordpress-general';
-		$this->activation_option = isset( $config['activation_option'] ) ? (string) $config['activation_option'] : '';
-		$this->is_pro            = $config['is_pro'] ?? false;
-		$this->software_version  = isset( $config['software_version'] ) ? (string) $config['software_version'] : '';
-		$this->base_links        = isset( $config['base_links'] ) && is_array( $config['base_links'] ) ? $config['base_links'] : [];
-		$this->ref_filter        = isset( $config['ref_filter'] ) ? (string) $config['ref_filter'] : '';
+		$this->defaults   = isset( $config['defaults'] ) && is_array( $config['defaults'] ) ? $config['defaults'] : [];
+		$this->base_links = isset( $config['base_links'] ) && is_array( $config['base_links'] ) ? $config['base_links'] : [];
 	}
 
 	/**
-	 * Build a link from a URL, adding the standard UTM/telemetry query args.
+	 * Build a link from a URL, adding the configured default query args.
 	 *
-	 * If $url is empty, the 'default' base link is used. If $url doesn't
-	 * start with http(s), it's treated as relative and appended to the
-	 * 'default' base link.
+	 * If $url doesn't start with http(s), it's treated as relative and
+	 * appended to the 'default' base link.
 	 *
-	 * @param string $url        Absolute or relative URL. Optional.
+	 * @param string $url        Absolute or relative URL. Optional; if omitted, the
+	 *                           'default' base link is used as-is.
 	 * @param array  $query_args Extra/override query args, e.g. [ 'utm_content' => 'sidebar' ].
 	 *
 	 * @return string
@@ -176,33 +131,30 @@ class UtmLinkBuilder {
 	}
 
 	/**
-	 * The default query args applied to every generated link, before any
-	 * caller-supplied $query_args are merged in on top.
+	 * Resolve the configured `defaults` into a plain array, calling any
+	 * callables and dropping any key whose resolved value is null.
 	 *
 	 * @return array<string, mixed>
 	 */
 	public function default_query_args() {
-		$defaults = [
-			'utm_source'       => $this->utm_source,
-			'utm_medium'       => $this->utm_medium,
-			'utm_campaign'     => $this->utm_campaign,
-			'php_version'      => PHP_VERSION,
-			'platform'         => 'wordpress',
-			'platform_version' => $this->wp_version(),
-			'software'         => $this->is_pro() ? 'pro' : 'free',
-			'software_version' => $this->software_version,
-		];
+		$resolved = [];
 
-		if ( '' !== $this->activation_option ) {
-			$defaults['days_active'] = $this->days_active();
+		foreach ( $this->defaults as $key => $value ) {
+			$value = $this->resolve( $value );
+
+			if ( null === $value ) {
+				continue;
+			}
+
+			$resolved[ $key ] = $value;
 		}
 
-		return $defaults;
+		return $resolved;
 	}
 
 	/**
-	 * Merge defaults + overrides + an optional filtered `ref` arg, then
-	 * add them to the base URL as a query string.
+	 * Merge resolved defaults with caller overrides, then add them to the
+	 * base URL as a query string.
 	 *
 	 * @param string $base_link  Base URL.
 	 * @param array  $query_args Caller-supplied overrides.
@@ -210,13 +162,6 @@ class UtmLinkBuilder {
 	 * @return string
 	 */
 	protected function merge_and_apply( $base_link, array $query_args ) {
-		if ( '' !== $this->ref_filter && function_exists( 'apply_filters' ) ) {
-			$ref = apply_filters( $this->ref_filter, '' ); // phpcs:ignore WordPress.NamingConventions.PrefixAllGlobals.NonPrefixedHookName
-			if ( ! empty( $ref ) && is_string( $ref ) ) {
-				$query_args['ref'] = $ref;
-			}
-		}
-
 		$query_args = array_merge( $this->default_query_args(), $query_args );
 
 		if ( function_exists( 'add_query_arg' ) ) {
@@ -228,47 +173,56 @@ class UtmLinkBuilder {
 	}
 
 	/**
-	 * Resolve whether pro is active.
+	 * Resolve a single defaults value: call it if it's callable, otherwise
+	 * return it as-is. Plain strings are never invoked, so a default like
+	 * 'utm_campaign' => 'time' is used literally rather than calling time().
 	 *
-	 * @return bool
+	 * @param mixed $value Raw value from the `defaults` config.
+	 *
+	 * @return mixed
 	 */
-	protected function is_pro() {
-		if ( is_callable( $this->is_pro ) ) {
-			return (bool) call_user_func( $this->is_pro );
+	protected function resolve( $value ) {
+		if ( $value instanceof \Closure ) {
+			return call_user_func( $value );
 		}
 
-		return (bool) $this->is_pro;
+		if ( is_array( $value ) && is_callable( $value ) ) {
+			return call_user_func( $value );
+		}
+
+		if ( is_object( $value ) && method_exists( $value, '__invoke' ) ) {
+			return call_user_func( $value );
+		}
+
+		return $value;
 	}
 
 	/**
-	 * Days since the configured activation option was set.
+	 * Optional utility: number of whole days since a stored date, e.g. for
+	 * a plugin-specific "days active" telemetry value. Not used
+	 * automatically by this class — wire it into `defaults` yourself if you
+	 * want it:
 	 *
-	 * @return int
+	 *     'days_active' => static function () {
+	 *         return UtmLinkBuilder::days_since( get_option( 'my_plugin_activation_date' ) );
+	 *     },
+	 *
+	 * @param string|null $since_date A date string parseable by DateTime, or null.
+	 *
+	 * @return int|null Whole days elapsed, or null if $since_date is empty/unparseable.
 	 */
-	protected function days_active() {
+	public static function days_since( $since_date ) {
+		if ( empty( $since_date ) || ! is_string( $since_date ) ) {
+			return null;
+		}
+
 		try {
-			$now             = new DateTime( gmdate( 'Y-m-d H:i:s' ) );
-			$activation_date = function_exists( 'get_option' )
-				? get_option( $this->activation_option, gmdate( 'Y-m-d H:i:s' ) )
-				: gmdate( 'Y-m-d H:i:s' );
-			$activation      = new DateTime( $activation_date );
+			$now   = new DateTime( gmdate( 'Y-m-d H:i:s' ) );
+			$since = new DateTime( $since_date );
 
-			return $now->diff( $activation )->days;
-		} catch ( \Exception $e ) {
-			return 0;
+			return $now->diff( $since )->days;
+		} catch ( Exception $e ) {
+			return null;
 		}
-	}
-
-	/**
-	 * Current WordPress version, if available.
-	 *
-	 * @return string
-	 */
-	protected function wp_version() {
-		if ( function_exists( 'get_bloginfo' ) ) {
-			return get_bloginfo( 'version' );
-		}
-
-		return isset( $GLOBALS['wp_version'] ) ? $GLOBALS['wp_version'] : '';
 	}
 }

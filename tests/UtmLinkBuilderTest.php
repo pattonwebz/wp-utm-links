@@ -24,28 +24,39 @@ class UtmLinkBuilderTest extends TestCase {
 		return $args;
 	}
 
-	public function test_build_link_applies_defaults(): void {
+	public function test_build_link_with_no_config_just_appends_query_args(): void {
+		$builder = new UtmLinkBuilder();
+
+		$url  = $builder->build_link( 'https://example.com/docs/', [ 'utm_source' => 'my-plugin' ] );
+		$args = $this->parse_query( $url );
+
+		$this->assertStringStartsWith( 'https://example.com/docs/', $url );
+		$this->assertSame( 'my-plugin', $args['utm_source'] );
+	}
+
+	public function test_build_link_applies_static_defaults(): void {
 		$builder = new UtmLinkBuilder(
 			[
-				'utm_source'       => 'my-plugin',
-				'software_version' => '1.2.3',
+				'defaults' => [
+					'utm_source'   => 'my-plugin',
+					'utm_medium'   => 'software',
+					'utm_campaign' => 'wordpress-general',
+				],
 			]
 		);
 
 		$url  = $builder->build_link( 'https://example.com/docs/' );
 		$args = $this->parse_query( $url );
 
-		$this->assertStringStartsWith( 'https://example.com/docs/', $url );
 		$this->assertSame( 'my-plugin', $args['utm_source'] );
 		$this->assertSame( 'software', $args['utm_medium'] );
 		$this->assertSame( 'wordpress-general', $args['utm_campaign'] );
-		$this->assertSame( 'free', $args['software'] );
-		$this->assertSame( '1.2.3', $args['software_version'] );
-		$this->assertArrayNotHasKey( 'days_active', $args, 'days_active is omitted when no activation_option is configured.' );
 	}
 
 	public function test_build_link_overrides_defaults(): void {
-		$builder = new UtmLinkBuilder( [ 'utm_source' => 'my-plugin' ] );
+		$builder = new UtmLinkBuilder(
+			[ 'defaults' => [ 'utm_campaign' => 'wordpress-general' ] ]
+		);
 
 		$url  = $builder->build_link( 'https://example.com/docs/', [ 'utm_campaign' => 'launch' ] );
 		$args = $this->parse_query( $url );
@@ -55,10 +66,7 @@ class UtmLinkBuilderTest extends TestCase {
 
 	public function test_build_link_resolves_relative_url_against_default_base(): void {
 		$builder = new UtmLinkBuilder(
-			[
-				'utm_source' => 'my-plugin',
-				'base_links' => [ 'default' => 'https://example.com/docs' ],
-			]
+			[ 'base_links' => [ 'default' => 'https://example.com/docs' ] ]
 		);
 
 		$url = $builder->build_link( 'getting-started' );
@@ -66,25 +74,55 @@ class UtmLinkBuilderTest extends TestCase {
 		$this->assertStringStartsWith( 'https://example.com/docs/getting-started', $url );
 	}
 
-	public function test_is_pro_accepts_callable(): void {
+	public function test_defaults_support_closures_resolved_at_build_time(): void {
+		$state   = [ 'software' => 'free' ];
 		$builder = new UtmLinkBuilder(
 			[
-				'utm_source' => 'my-plugin',
-				'is_pro'     => static function () {
-					return true;
-				},
+				'defaults' => [
+					'software' => static function () use ( &$state ) {
+						return $state['software'];
+					},
+				],
+			]
+		);
+
+		$args_before = $this->parse_query( $builder->build_link( 'https://example.com/' ) );
+		$this->assertSame( 'free', $args_before['software'] );
+
+		$state['software'] = 'pro';
+		$args_after         = $this->parse_query( $builder->build_link( 'https://example.com/' ) );
+		$this->assertSame( 'pro', $args_after['software'] );
+	}
+
+	public function test_defaults_plain_string_is_not_treated_as_callable(): void {
+		$builder = new UtmLinkBuilder(
+			[ 'defaults' => [ 'utm_campaign' => 'time' ] ]
+		);
+
+		$args = $this->parse_query( $builder->build_link( 'https://example.com/' ) );
+
+		$this->assertSame( 'time', $args['utm_campaign'] );
+	}
+
+	public function test_defaults_callable_returning_null_omits_key(): void {
+		$builder = new UtmLinkBuilder(
+			[
+				'defaults' => [
+					'ref' => static function () {
+						return null;
+					},
+				],
 			]
 		);
 
 		$args = $this->parse_query( $builder->build_link( 'https://example.com/' ) );
 
-		$this->assertSame( 'pro', $args['software'] );
+		$this->assertArrayNotHasKey( 'ref', $args );
 	}
 
 	public function test_build_type_link_uses_named_base_link(): void {
 		$builder = new UtmLinkBuilder(
 			[
-				'utm_source' => 'my-plugin',
 				'base_links' => [
 					'pro'  => 'https://example.com/pricing/',
 					'help' => 'https://example.com/help',
@@ -99,10 +137,7 @@ class UtmLinkBuilderTest extends TestCase {
 
 	public function test_build_type_link_append_arg(): void {
 		$builder = new UtmLinkBuilder(
-			[
-				'utm_source' => 'my-plugin',
-				'base_links' => [ 'help' => 'https://example.com/help' ],
-			]
+			[ 'base_links' => [ 'help' => 'https://example.com/help' ] ]
 		);
 
 		$url = $builder->build_type_link( [], 'help', [ 'append' => '/some-article' ] );
@@ -111,33 +146,39 @@ class UtmLinkBuilderTest extends TestCase {
 	}
 
 	public function test_build_type_link_base_link_override(): void {
-		$builder = new UtmLinkBuilder( [ 'utm_source' => 'my-plugin' ] );
+		$builder = new UtmLinkBuilder();
 
 		$url = $builder->build_type_link( [], 'custom', [ 'base_link' => 'https://example.com/custom/' ] );
 
 		$this->assertStringStartsWith( 'https://example.com/custom/', $url );
 	}
 
-	public function test_ref_filter_adds_ref_arg(): void {
-		\Pattonwebz\WPUtmLinks\Tests\set_next_filter_value( 'my_plugin_ref', 'newsletter' );
+	public function test_days_since_returns_whole_days(): void {
+		$ten_days_ago = gmdate( 'Y-m-d H:i:s', strtotime( '-10 days' ) );
+
+		$this->assertSame( 10, UtmLinkBuilder::days_since( $ten_days_ago ) );
+	}
+
+	public function test_days_since_returns_null_for_empty_input(): void {
+		$this->assertNull( UtmLinkBuilder::days_since( '' ) );
+		$this->assertNull( UtmLinkBuilder::days_since( null ) );
+	}
+
+	public function test_days_since_wired_through_defaults(): void {
+		$activation_date = gmdate( 'Y-m-d H:i:s', strtotime( '-3 days' ) );
 
 		$builder = new UtmLinkBuilder(
 			[
-				'utm_source' => 'my-plugin',
-				'ref_filter' => 'my_plugin_ref',
+				'defaults' => [
+					'days_active' => static function () use ( $activation_date ) {
+						return UtmLinkBuilder::days_since( $activation_date );
+					},
+				],
 			]
 		);
 
 		$args = $this->parse_query( $builder->build_link( 'https://example.com/' ) );
 
-		$this->assertSame( 'newsletter', $args['ref'] );
+		$this->assertSame( '3', $args['days_active'] );
 	}
-}
-
-/**
- * Tiny filter registry so test_ref_filter_adds_ref_arg can control the
- * stubbed apply_filters() return value without a real WP hooks system.
- */
-function set_next_filter_value( string $tag, $value ): void {
-	$GLOBALS['__wp_utm_links_test_filters'][ $tag ] = $value;
 }
